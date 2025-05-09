@@ -1,0 +1,161 @@
+#!/usr/bin/env bash
+
+#::name: set-core-env-vars
+#::short: Sets core environment variables for consistent cross-platform config paths.
+#::help:
+#::  This script sets core XDG environment variables for the user based on the
+#::  XDG Base Directory Specification. It ensures that each required directory exists,
+#::  exports variables for the current session, and appends them to the correct shell
+#::  startup file if not already present.
+#::
+#::  Supported shells:
+#::    - bash (.bashrc)
+#::    - zsh (.zshrc)
+#::    - fish (config.fish)
+#::
+#::  Log files are saved to:
+#::    $XDG_STATE_HOME/logs/cli-hub/YYYYMMDD_HHmmss_set-core-env-vars.log
+#::
+#::  Usage:
+#::      init set-core-env-vars
+
+set -euo pipefail
+
+# --- Bootstrap logging setup ---
+timestamp=$(date '+%Y%m%d_%H%M%S')
+bootstrap_log="$HOME/.cli-hub-bootstrap.log"
+
+log_entry() {
+  local msg="$1"
+  local ts
+  ts=$(date '+%Y-%m-%d %H:%M:%S')
+  echo "$ts [BOOTSTRAP] $msg" >> "$bootstrap_log"
+}
+
+log_entry "Script start: set-core-env-vars"
+
+# --- Determine shell and config file ---
+shell_name=$(basename "$SHELL")
+rc_file=""
+
+case "$shell_name" in
+  bash)
+    rc_file="$HOME/.bashrc"
+    ;;
+  zsh)
+    rc_file="$HOME/.zshrc"
+    ;;
+  fish)
+    rc_file="$HOME/.config/fish/config.fish"
+    ;;
+  *)
+    log_entry "❌ Unsupported shell: $shell_name. Aborting."
+    echo "❌ Unsupported shell: $shell_name. Please manually export XDG variables in your shell config."
+    exit 1
+    ;;
+esac
+
+log_entry "Target shell config file: $rc_file"
+
+# --- Ensure shell config file exists ---
+if [[ ! -f "$rc_file" ]]; then
+  touch "$rc_file"
+  log_entry "Created missing shell config file: $rc_file"
+fi
+
+# --- Define XDG variables ---
+declare -A xdg_vars=(
+  [XDG_CONFIG_HOME]="$HOME/.config"
+  [XDG_DATA_HOME]="$HOME/.local/share"
+  [XDG_STATE_HOME]="$HOME/.local/state"
+  [XDG_CACHE_HOME]="$HOME/.cache"
+  [XDG_BIN_HOME]="$HOME/.local/bin"
+  [XDG_RUNTIME_DIR]="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"
+)
+
+# --- Ensure directories exist and export for current session ---
+for var in "${!xdg_vars[@]}"; do
+  path="${xdg_vars[$var]}"
+  mkdir -p "$path"
+  export $var="$path"
+  log_entry "Exported $var=$path (current session)"
+done
+
+# --- Switch to final log file ---
+log_dir="${xdg_vars[XDG_STATE_HOME]}/logs/cli-hub"
+mkdir -p "$log_dir"
+final_log="$log_dir/${timestamp}_set-core-env-vars.log"
+mv "$bootstrap_log" "$final_log"
+
+log_entry() {
+  local msg="$1"
+  local ts
+  ts=$(date '+%Y-%m-%d %H:%M:%S')
+  echo "$ts $msg" >> "$final_log"
+}
+
+# --- Check for existing standardized block ---
+start_marker="# >>> cli-hub xdg env start >>>"
+end_marker="# <<< cli-hub xdg env end <<<"
+if grep -q "$start_marker" "$rc_file"; then
+  log_entry "Standard cli-hub block already exists in $rc_file. Skipping insertion."
+  echo "✅ Standardized XDG environment variables are already configured."
+  echo "📄 Log written to: $final_log"
+  exit 0
+fi
+
+# --- Backup shell config file just before modification ---
+backup_file="${rc_file}.cli-hub.bak.$timestamp"
+cp "$rc_file" "$backup_file"
+log_entry "Backup created: $backup_file"
+
+# --- Scan for existing XDG variable lines in RC file ---
+existing_lines=()
+for var in "${!xdg_vars[@]}"; do
+  match=""
+  if [[ "$shell_name" == "fish" ]]; then
+    match=$(grep -E "^\s*set\s+-Ux\s+$var" "$rc_file" || true)
+  else
+    match=$(grep -E "^\s*export\s+$var=" "$rc_file" || true)
+  fi
+  if [[ -n "$match" ]]; then
+    existing_lines+=("$match")
+    sed -i "/^.*$var.*/d" "$rc_file"
+    log_entry "Removed existing definition of $var"
+  fi
+done
+
+# --- Append old definitions as commented block ---
+if [[ ${#existing_lines[@]} -gt 0 ]]; then
+  {
+    echo ""
+    echo "# >>> cli-hub old XDG definitions (preserved for reference) >>>"
+    for line in "${existing_lines[@]}"; do
+      echo "# $line"
+    done
+    echo "# <<< end of old definitions <<<"
+  } >> "$rc_file"
+  log_entry "Appended commented old XDG definitions to $rc_file"
+fi
+
+# --- Insert standard cli-hub block ---
+buffer="$start_marker\n"
+
+if [[ "$shell_name" == "fish" ]]; then
+  for var in "${!xdg_vars[@]}"; do
+    buffer+="set -Ux $var \"${xdg_vars[$var]}\"\n"
+  done
+else
+  for var in "${!xdg_vars[@]}"; do
+    buffer+="export $var=\"${xdg_vars[$var]}\"\n"
+  done
+fi
+buffer+="$end_marker"
+
+echo -e "\n$buffer" >> "$rc_file"
+log_entry "Appended standardized cli-hub block to $rc_file"
+
+echo "✅ Core environment variables set."
+echo "📄 Log written to: $final_log"
+echo "📝 Backup of $rc_file saved as: $backup_file"
+exit 0
