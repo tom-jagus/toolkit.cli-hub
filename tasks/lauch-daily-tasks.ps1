@@ -1,38 +1,19 @@
 #::name: launch-daily-tasks
 #::short: Opens a terminal with Neovim and date-based task files.
 #::help:
-#::  Launches a new terminal session and starts Neovim with today's and yesterday's
-#::  task files already opened. This script is designed to be used with shortcut
-#::  launchers, autostart entries, or CLI-based workflows.
-#::
-#::  Files opened:
-#::    - YYYY-MM-dd-tasks.md       (today)
-#::    - YYYY-MM-dd-tasks.md       (yesterday)
-#::
-#::  Requires Neovim to be installed and available in the system path.
-#::
-#::  Usage:
-#::      init launch-daily-tasks
-#::      (or run via a desktop or startup shortcut)
+#::  Launches Neovim with today's and previous task file (if available).
+#::  Creates today's file if it doesn't exist. Previous file is selected from
+#::  existing files, based on latest date before today.
+#::  Designed for CLI workflows and launcher shortcuts.
 
-# Get dates
+# Get today's date info
 $today = Get-Date
-$yesterday = (Get-Date).AddDays(-1)
-
-# Format dates to strings
 $today_string = $today.ToString("yyyy-MM-dd")
 $today_day_of_week = $today.DayOfWeek.ToString()
-$today_title_formatted = $today.ToString("dddd, MMMM dd, yyyy")
-$yesterday_string = $yesterday.ToString("yyyy-MM-dd")
-$yesterday_day_of_week = $yesterday.DayOfWeek.ToString()
-$yesterday_title_formatted = $yesterday.ToString("dddd, MMMM dd, yyyy")
-
-# Generate file names
+$today_title_formatted = $today.ToString("dddd - MMMM dd, yyyy")
 $today_file_name = "$today_string-todo.md"
-$yesterday_file_name = "$yesterday_string-todo.md"
 
-# Daily notes template
-
+# Function to generate content template
 function Generate-Template($date, $day_of_week, $title_formatted) {
   return @"
 ---
@@ -76,21 +57,24 @@ focus:
 "@
 }
 
-# Daily notes creation
-# Yesterday
-$content = Generate-Template $yesterday_string $yesterday_day_of_week $yesterday_title_formated
-
-if (-Not (Test-Path $yesterday_file_name)) {
-    $content | Out-File -Encoding UTF8 $yesterday_file_name
-  }
-
-# Today
-$content = Generate-Template $today_string $today_day_of_week $today_title_formated
-
-if (-Not (Test-Path $todays_file_name)) {
+# Create today's file if missing
+if (-Not (Test-Path $today_file_name)) {
+    $content = Generate-Template $today_string $today_day_of_week $today_title_formatted
     $content | Out-File -Encoding UTF8 $today_file_name
-  }
+}
 
-# Open both yesterday and today notes
+# Find most recent existing file before today
+$previous_file = Get-ChildItem -File -Filter "*-todo.md" |
+    Where-Object {
+        $_.BaseName -match "^\d{4}-\d{2}-\d{2}" -and
+        ([datetime]::ParseExact($_.BaseName.Substring(0,10), "yyyy-MM-dd", $null)) -lt $today_string
+    } |
+    Sort-Object  -Descending |
+    Select-Object -First 1
 
-nvim $yesterday_file_name $today_file_name
+# Open in Neovim: today + previous if found
+if ($previous_file) {
+    nvim $previous_file.Name $today_file_name
+} else {
+    nvim $today_file_name
+}
